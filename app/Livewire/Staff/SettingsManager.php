@@ -3,6 +3,7 @@
 namespace App\Livewire\Staff;
 
 use App\Models\AdminSetting;
+use App\Models\AppLockResetRequest;
 use App\Models\Branch;
 use App\Models\Country;
 use App\Models\Department;
@@ -554,6 +555,35 @@ class SettingsManager extends Component
         }
     }
 
+    public function approveAppLockReset(int $requestId): void
+    {
+        $this->authorize('settings.update');
+        $req = AppLockResetRequest::with('user')->findOrFail($requestId);
+        $code = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+        $req->update([
+            'status' => 'approved',
+            'reset_code' => $code,
+            'approved_by' => Auth::id(),
+            'approved_at' => now(),
+            'expires_at' => now()->addMinutes(15),
+        ]);
+        AuditService::log(Auth::user(), 'APP_LOCK_RESET_APPROVED', "User #{$req->user_id}", "Approved {$req->lock_type} reset (code valid 15 min)");
+        $this->flashMessage = "Approved reset for {$req->user?->name}. One-time code: {$code} (valid 15 mins).";
+    }
+
+    public function rejectAppLockReset(int $requestId): void
+    {
+        $this->authorize('settings.update');
+        $req = AppLockResetRequest::with('user')->findOrFail($requestId);
+        $req->update([
+            'status' => 'rejected',
+            'approved_by' => Auth::id(),
+            'approved_at' => now(),
+        ]);
+        AuditService::log(Auth::user(), 'APP_LOCK_RESET_REJECTED', "User #{$req->user_id}", "Rejected {$req->lock_type} reset request");
+        $this->flashMessage = "Rejected reset request for {$req->user?->name}.";
+    }
+
     public function render()
     {
         $allPerms = Permission::orderBy('name')->pluck('name');
@@ -589,6 +619,8 @@ class SettingsManager extends Component
             'roles' => Role::with('permissions')->where('name', '!=', 'Super Admin')->orderBy('id')->get(),
             'assignableRoles' => Role::whereNotIn('name', ['Super Admin', 'Member'])->orderBy('id')->get(),
             'groupedPermissions' => $groupedPermissions,
+            'appLockResetRequests' => AppLockResetRequest::with(['user', 'approver'])->latest()->limit(30)->get(),
+            'pendingAppLockResetsCount' => AppLockResetRequest::where('status', 'pending')->count(),
         ]);
     }
 }

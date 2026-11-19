@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\AdminSetting;
+use App\Models\AppLockResetRequest;
 use App\Models\AuditLog;
 use App\Models\Budget;
 use App\Models\CommunicationTemplate;
@@ -595,5 +596,170 @@ class NodaApiController extends Controller
 
         $tx = $mpesa->processCallback($data, $request->user());
         return response()->json($tx, 200);
+    }
+
+    public function updateSettings(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'penalty_amount_per_member' => 'required|numeric|min:0',
+            'penalty_rule' => 'required|in:one_time_per_missed_due_date,per_day_late,escalating',
+            'penalty_cutoff_hour' => 'required|integer|min:0|max:23',
+            'penalty_cutoff_minute' => 'required|integer|min:0|max:59',
+            'min_loan_amount' => 'required|numeric|min:1',
+            'max_loan_amount' => 'required|numeric|gte:min_loan_amount',
+            'max_weeks' => 'required|integer|min:1|max:104',
+            'load_rate' => 'required|numeric|min:0|max:1',
+            'reminder_lead_days' => 'nullable|array',
+            'reminder_lead_days.*' => 'integer|min:0|max:30',
+        ]);
+
+        $settings = AdminSetting::current();
+        $settings->update($data);
+
+        AuditService::log(
+            $request->user(),
+            'UPDATE_SETTINGS',
+            'AdminSettings',
+            "Penalty={$data['penalty_amount_per_member']}, Rule={$data['penalty_rule']} via API"
+        );
+
+        return response()->json($settings->fresh());
+    }
+
+    public function requestAppLockReset(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'lock_type' => 'required|in:pin,pattern',
+        ]);
+
+        $user = $request->user();
+        $existing = AppLockResetRequest::where('user_id', $user->id)
+            ->whereIn('status', ['pending', 'approved'])
+            ->latest()
+            ->first();
+
+        if ($existing && ($existing->status === 'pending' || ($existing->status === 'approved' && $existing->expires_at && $existing->expires_at->isFuture()))) {
+            return response()->json([
+                'request_id' => $existing->id,
+                'status' => $existing->status,
+                'expires_at' => $existing->expires_at?->toIso8601String(),
+            ]);
+        }
+
+        $resetRequest = AppLockResetRequest::create([
+            'user_id' => $user->id,
+            'lock_type' => $data['lock_type'],
+            'status' => 'pending',
+        ]);
+
+        AuditService::log($user, 'APP_LOCK_RESET_REQUESTED', "User #{$user->id}", "Requested {$data['lock_type']} reset via Android app");
+
+        return response()->json([
+            'request_id' => $resetRequest->id,
+            'status' => $resetRequest->status,
+            'expires_at' => null,
+        ], 201);
+    }
+
+    public function appLockResetStatus(Request $request): JsonResponse
+    {
+        $latest = AppLockResetRequest::where('user_id', $request->user()->id)
+            ->whereIn('status', ['pending', 'approved', 'rejected'])
+            ->latest()
+            ->first();
+
+        if (! $latest) {
+            return response()->json(['status' => 'none']);
+        }
+
+        if ($latest->status === 'approved' && $latest->expires_at && $latest->expires_at->isPast()) {
+            return response()->json(['status' => 'expired']);
+        }
+
+        return response()->json([
+            'request_id' => $latest->id,
+            'status' => $latest->status,
+            'expires_at' => $latest->expires_at?->toIso8601String(),
+        ]);
+    }
+
+    public function completeAppLockReset(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'reset_code' => 'nullable|string',
+        ]);
+
+        $user = $request->user();
+        $approved = AppLockResetRequest::where('user_id', $user->id)
+            ->where('status', 'approved')
+            ->latest()
+            ->first();
+
+        if (! $approved || ($approved->expires_at && $approved->expires_at->isPast())) {
+            return response()->json(['message' => 'No active approved reset request found. Ask your Admin to approve it.'], 422);
+        }
+
+        $code = trim((string) ($data['reset_code'] ?? ''));
+        if ($code !== '' && ! hash_equals((string) $approved->reset_code, $code)) {
+            return response()->json(['message' => 'Invalid reset code.'], 422);
+        }
+
+        $approved->update([
+            'status' => 'completed',
+            'completed_at' => now(),
+        ]);
+
+        AuditService::log($user, 'APP_LOCK_RESET_COMPLETED', "User #{$user->id}", "Completed {$approved->lock_type} reset via Android app");
+
+        return response()->json(['status' => 'completed']);
+    }
+
+    public function appLockResetRequests(): JsonResponse
+    {
+        $requests = AppLockResetRequest::with(['user:id,name,email,role', 'approver:id,name'])
+            ->latest()
+            ->limit(50)
+            ->get();
+
+        return response()->json(['requests' => $requests]);
+    }
+
+    public function approveAppLockReset(Request $request, AppLockResetRequest $appLockResetRequest): JsonResponse
+    {
+        $code = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+        $appLockResetRequest->update([
+            'status' => 'approved',
+            'reset_code' => $code,
+            'approved_by' => $request->user()->id,
+            'approved_at' => now(),
+            'expires_at' => now()->addMinutes(15),
+        ]);
+
+        AuditService::log(
+            $request->user(),
+            'APP_LOCK_RESET_APPROVED',
+            "User #{$appLockResetRequest->user_id}",
+            "Approved {$appLockResetRequest->lock_type} reset (expires in 15 min)"
+        );
+
+        return response()->json($appLockResetRequest->fresh('user'));
+    }
+
+    public function rejectAppLockReset(Request $request, AppLockResetRequest $appLockResetRequest): JsonResponse
+    {
+        $appLockResetRequest->update([
+            'status' => 'rejected',
+            'approved_by' => $request->user()->id,
+            'approved_at' => now(),
+        ]);
+
+        AuditService::log(
+            $request->user(),
+            'APP_LOCK_RESET_REJECTED',
+            "User #{$appLockResetRequest->user_id}",
+            "Rejected {$appLockResetRequest->lock_type} reset request"
+        );
+
+        return response()->json($appLockResetRequest->fresh('user'));
     }
 }

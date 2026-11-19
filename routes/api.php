@@ -9,6 +9,9 @@ Route::prefix('v1')->group(function () {
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('/dashboard', [NodaApiController::class, 'dashboard']);
+        Route::post('/app-lock/reset-request', [NodaApiController::class, 'requestAppLockReset']);
+        Route::get('/app-lock/reset-status', [NodaApiController::class, 'appLockResetStatus']);
+        Route::post('/app-lock/reset-complete', [NodaApiController::class, 'completeAppLockReset']);
 
         Route::middleware('staff')->group(function () {
             Route::post('/groups', [NodaApiController::class, 'createGroup'])->middleware('permission:groups.create');
@@ -27,6 +30,10 @@ Route::prefix('v1')->group(function () {
             Route::get('/reports', [NodaApiController::class, 'reports'])->middleware('permission:reports.view');
             Route::post('/reports/budgets', [NodaApiController::class, 'saveBudget'])->middleware('permission:reports.manage');
             Route::post('/reports/entries', [NodaApiController::class, 'saveFinancialEntry'])->middleware('permission:reports.manage');
+            Route::put('/settings', [NodaApiController::class, 'updateSettings'])->middleware('permission:settings.update');
+            Route::get('/app-lock/reset-requests', [NodaApiController::class, 'appLockResetRequests'])->middleware('permission:settings.update');
+            Route::post('/app-lock/reset-requests/{appLockResetRequest}/approve', [NodaApiController::class, 'approveAppLockReset'])->middleware('permission:settings.update');
+            Route::post('/app-lock/reset-requests/{appLockResetRequest}/reject', [NodaApiController::class, 'rejectAppLockReset'])->middleware('permission:settings.update');
         });
     });
 });

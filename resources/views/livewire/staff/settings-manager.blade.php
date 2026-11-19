@@ -21,6 +21,7 @@
                 'organization' => 'Branches, Depts & Titles',
                 'roles' => 'Roles & Permissions',
                 'staff' => __('messages.staff_users'),
+                'app_lock' => 'App Lock Resets' . ($pendingAppLockResetsCount > 0 ? " ({$pendingAppLockResetsCount})" : ''),
             ];
         @endphp
         @foreach($tabs as $key => $label)
@@ -31,7 +32,7 @@
         @endforeach
     </div>
 
-    @if(!in_array($activeTab, ['staff', 'organization', 'roles'], true))
+    @if(!in_array($activeTab, ['staff', 'organization', 'roles', 'app_lock'], true))
         <form wire:submit="saveSettings" class="space-y-5">
             @if($activeTab === 'loans_penalties')
                 <div class="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 space-y-3">
@@ -354,6 +355,62 @@
             </form>
         </div>
     </div>
+    @endif
+
+    {{-- Tab: App Lock Resets --}}
+    @if($activeTab === 'app_lock')
+        <div class="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 space-y-3">
+            <div>
+                <h2 class="font-bold text-base">Android App Lock Reset Requests</h2>
+                <p class="text-xs text-slate-500">Approve or reject PIN/Pattern reset requests from Android users. Approving generates a 6-digit code valid for 15 minutes.</p>
+            </div>
+
+            @if($appLockResetRequests->isEmpty())
+                <div class="text-xs text-slate-400 py-4 text-center">No app lock reset requests yet.</div>
+            @else
+                <div class="divide-y divide-slate-100 dark:divide-slate-700 text-xs">
+                    @foreach($appLockResetRequests as $req)
+                        <div class="py-3 flex flex-wrap justify-between items-center gap-3">
+                            <div>
+                                <div class="font-semibold">
+                                    {{ $req->user?->name ?? 'User #' . $req->user_id }}
+                                    <span class="text-slate-400 font-normal">({{ $req->user?->email }})</span>
+                                </div>
+                                <div class="text-slate-500 mt-0.5">
+                                    Type: <strong class="uppercase">{{ $req->lock_type }}</strong> •
+                                    Requested: {{ $req->created_at?->format('Y-m-d H:i') }}
+                                    @if($req->status === 'approved' && $req->reset_code)
+                                        • Code: <span class="font-mono font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded">{{ $req->reset_code }}</span>
+                                        (expires {{ $req->expires_at?->format('H:i') }})
+                                    @endif
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="px-2 py-0.5 rounded font-bold uppercase text-[10px]
+                                    {{ $req->status === 'pending' ? 'bg-amber-100 text-amber-700' : '' }}
+                                    {{ $req->status === 'approved' ? 'bg-emerald-100 text-emerald-700' : '' }}
+                                    {{ $req->status === 'completed' ? 'bg-blue-100 text-blue-700' : '' }}
+                                    {{ $req->status === 'rejected' ? 'bg-red-100 text-red-700' : '' }}">
+                                    {{ $req->status }}
+                                </span>
+                                @if($req->status === 'pending')
+                                    @can('settings.update')
+                                    <button type="button" wire:click="approveAppLockReset({{ $req->id }})"
+                                            class="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 text-xs font-bold">
+                                        Approve & Generate Code
+                                    </button>
+                                    <button type="button" wire:click="rejectAppLockReset({{ $req->id }})"
+                                            class="rounded-lg bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 text-xs font-bold">
+                                        Reject
+                                    </button>
+                                    @endcan
+                                @endif
+                            </div>
+                        </div>
+                    @endforeach
+                </div>
+            @endif
+        </div>
     @endif
 
     {{-- Tab: Staff Users --}}
